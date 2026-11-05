@@ -72,9 +72,12 @@ node ../wisent-texts/bin/texts.mjs bundle [--check]
 
 ## Runtimes
 
-`rust/` (`wisent_texts::Texts`) and `js/texts.mjs` read `bundle.json`. A
-product embeds it at build time (`Texts::bundle(include_str!(...))`, or an
-`import` of the JSON) and asks `texts.say(language, key, values)`. A language
+`rust/` (`wisent_texts::Texts`), `js/texts.mjs` and the Swift package
+`WisentTexts` (`Texts(bundle:)`, `say(_:in:_:)`) read `bundle.json`. A
+product embeds it at build time (`Texts::bundle(include_str!(...))`, an
+`import` of the JSON, or a SwiftPM resource) and asks it for a key in a
+language. `wisent_texts::languages()` is the fleet's list for a product that
+offers its reader a choice.
 without the key, or one the fleet does not speak, reads English; a key the
 bundle does not hold answers the key itself, so a missing word is visible, and
 `check` refuses it before it ships.
