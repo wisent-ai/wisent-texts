@@ -43,6 +43,16 @@ impl Texts {
         Ok(Self { source: bundle.texts, translations: bundle.translations })
     }
 
+    /// Every text of `key`, English and each translation: what recognises a
+    /// product's own words after the reader's language changed.
+    pub fn every(&self, key: &str) -> impl Iterator<Item = &str> {
+        self.source
+            .get(key)
+            .into_iter()
+            .chain(self.translations.values().filter_map(move |words| words.get(key)))
+            .map(String::as_str)
+    }
+
     /// The text of `key` in `language`, with each `{name}` replaced by its value.
     pub fn say(&self, language: &str, key: &str, values: &[(&str, &str)]) -> String {
         let text = self
