@@ -154,7 +154,13 @@ function translateLanguage(code) {
   if (answered.error) throw new Error(`${stado} cannot run: ${answered.error.message}; STADO_BIN names another stado executable`);
   if (answered.status !== 0) {
     const said = answered.stderr.split('\n').filter((line) => line.startsWith('Error:')).join('\n') || answered.stderr.trim();
-    throw new Error(`${stado} capabilities call inference --consumer wisent-texts exited ${answered.status}, nothing of ${code} was written:\n${said}`);
+    // Stado keeps every request no alternative answered; naming it is what
+    // lets a statement be recorded for exactly this language's request.
+    const kept = said.match(/no statement answers request ([0-9a-f]{64})/)?.[1];
+    const statement = kept
+      ? `\nStado kept request ${kept}; a statement answers it with \`stado capabilities attestation record inference --consumer wisent-texts --checked <what was checked> ${kept}\` and the next translate writes it`
+      : '';
+    throw new Error(`${stado} capabilities call inference --consumer wisent-texts exited ${answered.status}, nothing of ${code} was written:\n${said}${statement}`);
   }
   let content;
   try {
