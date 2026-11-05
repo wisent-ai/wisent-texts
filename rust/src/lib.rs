@@ -96,6 +96,30 @@ pub fn language() -> String {
     "en".into()
 }
 
+/// One language the fleet speaks: its code, English name and native name.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct Language {
+    pub code: String,
+    pub english: String,
+    pub native: String,
+}
+
+#[derive(serde::Deserialize)]
+struct Fleet {
+    languages: Vec<Language>,
+}
+
+/// Every language the fleet speaks (`languages.json`), the one list a product
+/// offers its reader instead of keeping its own.
+pub fn languages() -> &'static [Language] {
+    static FLEET: std::sync::LazyLock<Vec<Language>> = std::sync::LazyLock::new(|| {
+        let fleet: Fleet = serde_json::from_str(include_str!("../../languages.json"))
+            .expect("languages.json at the crate's repository root is the fleet's language list");
+        fleet.languages
+    });
+    &FLEET
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,6 +136,16 @@ mod tests {
         let mut every: Vec<&str> = texts.every("a").collect();
         every.sort_unstable();
         assert_eq!(every, ["For {hours} hours", "Na {hours} godz."]);
+    }
+
+    #[test]
+    fn the_fleet_list_holds_english_and_every_language_once() {
+        let codes: Vec<&str> = languages().iter().map(|language| language.code.as_str()).collect();
+        assert!(codes.contains(&"en") && codes.contains(&"pl") && codes.contains(&"zh"));
+        let mut unique = codes.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), codes.len());
     }
 
     #[test]
