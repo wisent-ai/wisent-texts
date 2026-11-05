@@ -45,7 +45,7 @@ impl Texts {
 
     /// Every text of `key`, English and each translation: what recognises a
     /// product's own words after the reader's language changed.
-    pub fn every(&self, key: &str) -> impl Iterator<Item = &str> {
+    pub fn every<'a>(&'a self, key: &'a str) -> impl Iterator<Item = &'a str> + 'a {
         self.source
             .get(key)
             .into_iter()
@@ -109,6 +109,9 @@ mod tests {
         assert_eq!(texts.say("pl", "b", &[]), "Deny");
         assert_eq!(texts.say("xx", "a", &[("hours", "2")]), "For 2 hours");
         assert_eq!(texts.say("pl", "unknown", &[]), "unknown");
+        let mut every: Vec<&str> = texts.every("a").collect();
+        every.sort_unstable();
+        assert_eq!(every, ["For {hours} hours", "Na {hours} godz."]);
     }
 
     #[test]
