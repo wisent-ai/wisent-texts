@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "product": "wisent-texts",
+  "releases": false,
+  "reason": "The repository is a source library and catalogue consumed at a pinned git revision by cargo and npm; it publishes no registry package or image and hosts nothing."
+}

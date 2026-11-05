@@ -1,0 +1,4 @@
+# A workspace at the root so a git dependency resolves (see wisent-errors).
+[workspace]
+members = ["rust"]
+resolver = "2"
