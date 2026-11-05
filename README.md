@@ -58,7 +58,9 @@ node ../wisent-texts/bin/texts.mjs bundle [--check]
   others are written, and the command ends non-zero. `STADO_BIN` names
   another stado executable.
 - `attest` answers the requests no alternative answered with statements: for
-  each language it reads `DIR/<code>.json`, checks it as an alternative's
+  each language it reads `DIR/<code>.json` (that language's keys) and any
+  `DIR/<key>.json` (one key in every language, `{code: text}`; a key both
+  answer in different words is refused), checks it as an alternative's
   answer is checked (every asked key, every placed value, nothing added),
   records it with `stado capabilities attestation record --checked TEXT` as
   the statement for exactly that language's request, then translates, so what

@@ -221,18 +221,41 @@ function translateLanguage(code) {
   return `${code}: ${wanted.length} key(s) translated`;
 }
 
-/// One language answered by a statement: the answer in `<answers>/<code>.json`
-/// is checked as a model's answer is, recorded with Stado as the statement
-/// answering exactly this language's request, and written by asking again,
-/// so what is written is what the alternatives answer.
+/// The answer for one language from `answers`: `<code>.json` holds that
+/// language's keys; `<key>.json` holds one key in every language
+/// (`{code: text}`), the shape a catalogue of few keys is answered in. Both
+/// may be present; a key both name in different words is refused.
+function answerFor(code, answers, wanted) {
+  const answer = {};
+  const sources = [];
+  const byLanguage = join(answers, `${code}.json`);
+  if (existsSync(byLanguage)) {
+    Object.assign(answer, read(byLanguage, 'the answer'));
+    sources.push(byLanguage);
+  }
+  for (const [key] of wanted) {
+    const byKey = join(answers, `${key}.json`);
+    if (!existsSync(byKey)) continue;
+    const text = read(byKey, 'the answer')[code];
+    if (text === undefined) continue;
+    if (key in answer && answer[key] !== text) throw new Error(`${byLanguage} and ${byKey} answer ${key} in different words`);
+    answer[key] = text;
+    sources.push(byKey);
+  }
+  if (!sources.length) throw new Error(`no answer in ${answers}: neither ${code}.json nor a <key>.json naming ${code}`);
+  return { answer, sources };
+}
+
+/// One language answered by a statement: its answer (`answerFor`) is checked
+/// as a model's answer is, recorded with Stado as the statement answering
+/// exactly this language's request, and written by asking again, so what is
+/// written is what the alternatives answer.
 function attestLanguage(code, answers, checked) {
   const { wanted, items, request } = requestFor(code);
   if (!wanted.length) return `${code}: nothing to translate`;
-  const path = join(answers, `${code}.json`);
-  if (!existsSync(path)) throw new Error(`no answer at ${path}`);
-  const translated = read(path, 'the answer');
+  const { answer: translated, sources } = answerFor(code, answers, wanted);
   const wrong = refusals(wanted, items, translated);
-  if (wrong.length) throw new Error(`the answer in ${path} was refused, nothing was recorded: ${wrong.join('; ')}`);
+  if (wrong.length) throw new Error(`the answer in ${sources.join(', ')} was refused, nothing was recorded: ${wrong.join('; ')}`);
   const asked = ask(code, request);
   if (asked.refusal && !asked.kept) throw new Error(asked.refusal);
   if (asked.kept) {
