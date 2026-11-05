@@ -1,15 +1,20 @@
 #!/usr/bin/env node
-// The wisent-texts command: check a product's catalogue and translations,
-// list what each language lacks, and translate what it lacks through Stado's
-// central alternatives. README.md states the contract.
+// The wisent-texts command. A product owns its words in its own repository,
+// under texts/: catalogue.json (its English texts) and translations/<code>.json
+// (each language); this command checks them against the fleet's languages,
+// lists what a language lacks, translates it through Stado's central
+// alternatives, and writes bundle.json, the one file a product's runtime
+// reads. README.md states the contract.
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 
 const usage = `usage:
-  texts [--root DIR] check [<product>] [--language CODE]... [--allow-missing]
-  texts [--root DIR] missing <product>
-  texts [--root DIR] translate <product> [--language CODE]...`;
+  texts [--root DIR] check [--language CODE]... [--allow-missing]
+  texts [--root DIR] missing
+  texts [--root DIR] translate [--language CODE]...
+  texts [--root DIR] bundle [--check]
+DIR is the product's texts directory, ./texts by default.`;
 
 function fail(message, code = 1) {
   console.error(`texts: ${message}`);
@@ -17,7 +22,6 @@ function fail(message, code = 1) {
 }
 
 const args = process.argv.slice(2);
-let root = resolve(import.meta.dirname, '..');
 const take = (flag) => {
   const values = [];
   for (let at = args.indexOf(flag); at !== -1; at = args.indexOf(flag)) {
@@ -27,12 +31,12 @@ const take = (flag) => {
   }
   return values;
 };
-const rootFlag = take('--root');
-if (rootFlag.length) root = resolve(rootFlag.at(-1));
+const root = resolve(take('--root').at(-1) ?? 'texts');
 const languagesWanted = take('--language');
-const allowMissing = args.includes('--allow-missing');
-const positional = args.filter((word) => word !== '--allow-missing');
-const [verb, product] = positional;
+const flags = new Set(args.filter((word) => word.startsWith('--')));
+for (const flag of flags) if (!['--allow-missing', '--check'].includes(flag)) fail(`unknown option ${flag}\n${usage}`, 2);
+const [verb, extra] = args.filter((word) => !word.startsWith('--'));
+if (extra) fail(`unexpected ${extra}\n${usage}`, 2);
 
 const read = (path, what) => {
   try {
@@ -41,97 +45,88 @@ const read = (path, what) => {
     fail(`${what} ${path} cannot be read as JSON: ${error.message}`);
   }
 };
-const fleet = read(join(root, 'languages.json'), 'the language list');
+const fleet = read(resolve(import.meta.dirname, '..', 'languages.json'), 'the fleet language list');
 const codes = new Set(fleet.languages.map((language) => language.code));
 const source = fleet.source;
-const placed = (text) => [...text.matchAll(/\{([a-z_][a-z0-9_]*)\}/g)].map((match) => match[1]).sort();
+const placed = (text) => [...String(text).matchAll(/\{([a-z_][a-z0-9_]*)\}/g)].map((match) => match[1]).sort();
 const same = (a, b) => a.length === b.length && a.every((value, index) => value === b[index]);
 
-function catalogueOf(name) {
-  const path = join(root, 'catalogue', `${name}.json`);
-  if (!existsSync(path)) fail(`no catalogue for product ${name} (${path})`);
-  return read(path, 'the catalogue');
-}
-const translationDir = (name) => join(root, 'translations', name);
-const translationOf = (name, code) => {
-  const path = join(translationDir(name), `${code}.json`);
+const cataloguePath = join(root, 'catalogue.json');
+if (!existsSync(cataloguePath)) fail(`no catalogue at ${cataloguePath}; a product keeps its texts in texts/catalogue.json, or --root names the directory`);
+const catalogue = read(cataloguePath, 'the catalogue');
+const product = catalogue.product;
+if (typeof product !== 'string' || !product) fail(`${cataloguePath} names no product`);
+const entries = Object.entries(catalogue.texts ?? {});
+const translationDir = join(root, 'translations');
+const translationOf = (code) => {
+  const path = join(translationDir, `${code}.json`);
   return existsSync(path) ? read(path, 'the translation') : {};
 };
+const others = [...codes].filter((code) => code !== source);
 
-/// Every problem of one product's catalogue and translations.
-function problems(name, onlyLanguages) {
+/// Every problem of the catalogue and its translations.
+function problems(onlyLanguages, missingAllowed) {
   const found = [];
-  const catalogue = catalogueOf(name);
-  for (const [key, entry] of Object.entries(catalogue.texts ?? {})) {
+  for (const [key, entry] of entries) {
     if (typeof entry[source] !== 'string' || !entry[source].trim()) {
-      found.push(`${name}: key ${key} has no ${source} text`);
+      found.push(`key ${key} has no ${source} text`);
       continue;
     }
     const declared = [...(entry.places ?? [])].sort();
     for (const value of placed(entry[source])) {
-      if (!declared.includes(value)) found.push(`${name}: key ${key} places {${value}}, which its entry does not name in places`);
+      if (!declared.includes(value)) found.push(`key ${key} places {${value}}, which its entry does not name in places`);
+    }
+    for (const value of declared) {
+      if (!placed(entry[source]).includes(value)) found.push(`key ${key} names {${value}} in places, which its text does not place`);
     }
   }
-  const dir = translationDir(name);
-  const files = existsSync(dir) ? readdirSync(dir).filter((file) => file.endsWith('.json')) : [];
+  const files = existsSync(translationDir) ? readdirSync(translationDir).filter((file) => file.endsWith('.json')) : [];
   for (const file of files) {
     const code = file.slice(0, -'.json'.length);
-    if (!codes.has(code)) found.push(`${name}: translations/${name}/${file} is for ${code}, a language languages.json does not hold`);
+    if (!codes.has(code) || code === source) found.push(`translations/${file} is for ${code}, which is not a language to translate into (languages.json)`);
   }
-  const languages = (onlyLanguages.length ? onlyLanguages : [...codes]).filter((code) => code !== source);
-  for (const code of languages) {
-    if (!codes.has(code)) {
-      found.push(`${code} is not a language languages.json holds`);
+  for (const code of onlyLanguages.length ? onlyLanguages : others) {
+    if (!others.includes(code)) {
+      found.push(`${code} is not a language to translate into (languages.json)`);
       continue;
     }
-    const translation = translationOf(name, code);
+    const translation = translationOf(code);
     for (const [key, text] of Object.entries(translation)) {
       const entry = catalogue.texts?.[key];
       if (!entry) {
-        found.push(`${name}/${code}: translates key ${key}, which the catalogue does not hold`);
+        found.push(`${code}: translates key ${key}, which the catalogue does not hold`);
+        continue;
+      }
+      if (typeof text !== 'string' || !text.trim()) {
+        found.push(`${code}: key ${key} is not a nonempty string`);
         continue;
       }
       const want = placed(entry[source] ?? '');
-      const got = placed(String(text));
-      for (const value of want) if (!got.includes(value)) found.push(`${name}/${code}: key ${key} drops {${value}}`);
-      for (const value of got) if (!want.includes(value)) found.push(`${name}/${code}: key ${key} adds {${value}}`);
+      const got = placed(text);
+      for (const value of want) if (!got.includes(value)) found.push(`${code}: key ${key} drops {${value}}`);
+      for (const value of got) if (!want.includes(value)) found.push(`${code}: key ${key} adds {${value}}`);
     }
-    if (!allowMissing) {
-      const lacks = Object.keys(catalogue.texts ?? {}).filter((key) => !(key in translation));
-      if (lacks.length) found.push(`${name}/${code}: lacks ${lacks.length} key(s): ${lacks.slice(0, 5).join(', ')}${lacks.length > 5 ? ', …' : ''}`);
+    if (!missingAllowed) {
+      const lacks = entries.map(([key]) => key).filter((key) => !(key in translation));
+      if (lacks.length) found.push(`${code}: lacks ${lacks.length} key(s): ${lacks.slice(0, 5).join(', ')}${lacks.length > 5 ? ', …' : ''}`);
     }
   }
   return found;
 }
 
-function check() {
-  const products = product
-    ? [product]
-    : (existsSync(join(root, 'catalogue')) ? readdirSync(join(root, 'catalogue')) : [])
-        .filter((file) => file.endsWith('.json'))
-        .map((file) => file.slice(0, -'.json'.length));
-  const found = products.flatMap((name) => problems(name, languagesWanted));
-  if (found.length) fail(`${found.length} problem(s):\n${found.join('\n')}`);
-  console.log(`ok: ${products.join(', ') || 'no catalogue'}`);
-}
-
-function missing() {
-  if (!product) fail(usage, 2);
-  const catalogue = catalogueOf(product);
-  const keys = Object.keys(catalogue.texts ?? {});
-  for (const code of [...codes].filter((code) => code !== source)) {
-    const translation = translationOf(product, code);
-    const lacks = keys.filter((key) => !(key in translation));
-    if (lacks.length) console.log(`${code}: ${lacks.join(', ')}`);
+function bundle() {
+  const translations = {};
+  for (const code of others) {
+    const translation = translationOf(code);
+    if (Object.keys(translation).length) translations[code] = translation;
   }
+  return `${JSON.stringify({ product, source, texts: Object.fromEntries(entries.map(([key, entry]) => [key, entry[source]])), translations }, null, 1)}\n`;
 }
 
-/// One language's missing keys, translated through Stado's alternatives and
-/// checked before anything is written.
-function translateLanguage(catalogue, code) {
+function translateLanguage(code) {
   const language = fleet.languages.find((entry) => entry.code === code);
-  const current = translationOf(product, code);
-  const wanted = Object.entries(catalogue.texts ?? {}).filter(([key]) => !(key in current));
+  const current = translationOf(code);
+  const wanted = entries.filter(([key]) => !(key in current));
   if (!wanted.length) return `${code}: nothing to translate`;
   const items = Object.fromEntries(
     wanted.map(([key, entry]) => [key, { text: entry[source], for: entry.for ?? '', keep: placed(entry[source]).map((value) => `{${value}}`) }]),
@@ -156,20 +151,22 @@ function translateLanguage(catalogue, code) {
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
   });
-  if (answered.error) fail(`${code}: ${stado} cannot run: ${answered.error.message}; STADO_BIN names another stado executable`);
-  if (answered.status !== 0) fail(`${code}: ${stado} capabilities call inference --consumer wisent-texts exited ${answered.status}: ${answered.stderr.trim()}`);
+  if (answered.error) throw new Error(`${stado} cannot run: ${answered.error.message}; STADO_BIN names another stado executable`);
+  if (answered.status !== 0) {
+    const said = answered.stderr.split('\n').filter((line) => line.startsWith('Error:')).join('\n') || answered.stderr.trim();
+    throw new Error(`${stado} capabilities call inference --consumer wisent-texts exited ${answered.status}, nothing of ${code} was written:\n${said}`);
+  }
   let content;
   try {
-    const reply = JSON.parse(answered.stdout);
-    content = reply.choices?.[0]?.message?.content ?? '';
+    content = JSON.parse(answered.stdout).choices?.[0]?.message?.content ?? '';
   } catch (error) {
-    fail(`${code}: the answer is not a chat-completions response: ${error.message}`);
+    throw new Error(`the answer is not a chat-completions response: ${error.message}`);
   }
   let translated;
   try {
     translated = JSON.parse(String(content).replace(/^```(?:json)?\s*|\s*```$/g, ''));
   } catch (error) {
-    fail(`${code}: the translation is not one JSON object: ${error.message}; nothing of ${code} was written`);
+    throw new Error(`the translation is not one JSON object: ${error.message}; nothing of ${code} was written`);
   }
   const wrong = [];
   for (const [key, entry] of wanted) {
@@ -179,42 +176,67 @@ function translateLanguage(catalogue, code) {
       continue;
     }
     const want = placed(entry[source]);
-    if (!same(want, placed(text))) wrong.push(`${key} keeps {${placed(text).join('}, {')}} instead of {${want.join('}, {')}}`);
+    if (!same(want, placed(text))) wrong.push(`${key} places {${placed(text).join('}, {')}} instead of {${want.join('}, {')}}`);
   }
   for (const key of Object.keys(translated)) if (!items[key]) wrong.push(`adds ${key}, which was not asked`);
-  if (wrong.length) fail(`${code}: the translation was refused, nothing of ${code} was written: ${wrong.join('; ')}`);
+  if (wrong.length) throw new Error(`the translation was refused, nothing of ${code} was written: ${wrong.join('; ')}`);
   const merged = { ...current };
   for (const [key] of wanted) merged[key] = translated[key];
-  const ordered = Object.fromEntries(Object.keys(merged).sort().map((key) => [key, merged[key]]));
-  const path = join(translationDir(product), `${code}.json`);
+  const path = join(translationDir, `${code}.json`);
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(`${path}.tmp`, `${JSON.stringify(ordered, null, 2)}\n`);
+  writeFileSync(`${path}.tmp`, `${JSON.stringify(Object.fromEntries(Object.keys(merged).sort().map((key) => [key, merged[key]])), null, 2)}\n`);
   renameSync(`${path}.tmp`, path);
   return `${code}: ${wanted.length} key(s) translated`;
 }
 
-function translate() {
-  if (!product) fail(usage, 2);
-  const catalogue = catalogueOf(product);
-  const before = problems(product, languagesWanted).filter((problem) => !problem.includes(' lacks '));
-  if (before.length) fail(`the catalogue must pass check first:\n${before.join('\n')}`);
-  const targets = (languagesWanted.length ? languagesWanted : [...codes]).filter((code) => code !== source);
-  for (const code of targets) {
-    if (!codes.has(code)) fail(`${code} is not a language languages.json holds`);
-    console.log(translateLanguage(catalogue, code));
-  }
-}
-
 switch (verb) {
-  case 'check':
-    check();
+  case 'check': {
+    const found = problems(languagesWanted, flags.has('--allow-missing'));
+    const bundled = join(root, 'bundle.json');
+    if (existsSync(bundled) && readFileSync(bundled, 'utf8') !== bundle()) found.push('bundle.json does not match the catalogue and translations; run texts bundle');
+    if (found.length) fail(`${product}: ${found.length} problem(s):\n${found.join('\n')}`);
+    console.log(`${product}: ok, ${entries.length} key(s) in ${(languagesWanted.length ? languagesWanted : others).length} language(s)`);
     break;
+  }
   case 'missing':
-    missing();
+    for (const code of others) {
+      const translation = translationOf(code);
+      const lacks = entries.map(([key]) => key).filter((key) => !(key in translation));
+      if (lacks.length) console.log(`${code}: ${lacks.join(', ')}`);
+    }
     break;
-  case 'translate':
-    translate();
+  case 'translate': {
+    const before = problems(languagesWanted, true);
+    if (before.length) fail(`${product}: the catalogue and translations must pass check first:\n${before.join('\n')}`);
+    // Every language is asked, so one run files the request of each; a
+    // language that was not answered or was refused is named with its cause
+    // and the command ends non-zero once the others are written.
+    const failed = [];
+    for (const code of languagesWanted.length ? languagesWanted : others) {
+      try {
+        console.log(translateLanguage(code));
+      } catch (error) {
+        failed.push(`${code}: ${error.message}`);
+      }
+    }
+    writeFileSync(join(root, 'bundle.json'), bundle());
+    if (failed.length) fail(`${product}: ${failed.length} language(s) not translated:\n${failed.join('\n')}`);
     break;
+  }
+  case 'bundle': {
+    const path = join(root, 'bundle.json');
+    const fresh = bundle();
+    if (flags.has('--check')) {
+      if (!existsSync(path) || readFileSync(path, 'utf8') !== fresh) fail(`${path} does not match the catalogue and translations; run texts bundle`);
+      console.log(`${product}: bundle.json is current`);
+      break;
+    }
+    const found = problems([], true);
+    if (found.length) fail(`${product}: ${found.length} problem(s):\n${found.join('\n')}`);
+    writeFileSync(path, fresh);
+    console.log(`${product}: wrote ${path}`);
+    break;
+  }
   default:
     fail(usage, 2);
 }

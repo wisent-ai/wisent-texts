@@ -1,0 +1,25 @@
+{
+  "name": "@wisent/texts",
+  "version": "1.0.0",
+  "description": "A Wisent product's words in the language its reader reads.",
+  "type": "module",
+  "main": "js/texts.mjs",
+  "types": "js/texts.d.ts",
+  "exports": {
+    ".": {
+      "types": "./js/texts.d.ts",
+      "default": "./js/texts.mjs"
+    }
+  },
+  "bin": {
+    "wisent-texts": "bin/texts.mjs"
+  },
+  "files": [
+    "js/",
+    "bin/",
+    "languages.json"
+  ],
+  "//": "At the root so `npm install github:wisent-ai/wisent-texts` works, as wisent-errors does.",
+  "private": true,
+  "license": "UNLICENSED"
+}
