@@ -9,7 +9,8 @@
     ".": {
       "types": "./js/texts.d.ts",
       "default": "./js/texts.mjs"
-    }
+    },
+    "./languages.json": "./languages.json"
   },
   "bin": {
     "wisent-texts": "bin/texts.mjs"
