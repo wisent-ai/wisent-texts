@@ -35,6 +35,7 @@ Run from the product's repository (or name the directory with `--root`):
 node ../wisent-texts/bin/texts.mjs check [--language CODE]... [--allow-missing]
 node ../wisent-texts/bin/texts.mjs missing
 node ../wisent-texts/bin/texts.mjs translate [--language CODE]...
+node ../wisent-texts/bin/texts.mjs attest --answers DIR --checked TEXT [--language CODE]...
 node ../wisent-texts/bin/texts.mjs bundle [--check]
 ```
 
@@ -51,10 +52,19 @@ node ../wisent-texts/bin/texts.mjs bundle [--check]
   (Brama, or a statement the operator recorded for that exact request with
   `stado capabilities attestation record`). An answer that is not one JSON
   object, misses or adds a key, or drops a placed value is refused naming the
-  key, and nothing of that language is written. When no alternative answers,
-  the command stops with Stado's message naming each alternative and its
-  cause; the languages before it stay written. `STADO_BIN` names another
-  stado executable.
+  key, and nothing of that language is written. Every language is asked in
+  one run; a language no alternative answered is named with Stado's message
+  (each alternative and its cause) and the request Stado kept for it, the
+  others are written, and the command ends non-zero. `STADO_BIN` names
+  another stado executable.
+- `attest` answers the requests no alternative answered with statements: for
+  each language it reads `DIR/<code>.json`, checks it as an alternative's
+  answer is checked (every asked key, every placed value, nothing added),
+  records it with `stado capabilities attestation record --checked TEXT` as
+  the statement for exactly that language's request, then translates, so what
+  is written is what Stado's alternatives answer. An answer that fails the
+  check is refused naming the key and nothing is recorded; a language an
+  alternative already answers needs no statement and none is recorded.
 - `bundle` writes `bundle.json` from the catalogue and translations; with
   `--check` it refuses a stale one, which is what a product's CI runs.
 

@@ -86,8 +86,23 @@ try {
     assert.equal(said.say('xx', 'dialog.approve'), 'Approve');
     assert.equal(texts('check', '--language', language).status, 0);
 
-    write(cataloguePath, { ...catalogue, texts: { ...catalogue.texts, 'dialog.deny': { en: 'Deny', for: 'the refusing button' } } });
+    write(cataloguePath, { ...catalogue, texts: { ...catalogue.texts, 'dialog.extra': { en: 'Extra', for: 'a key added after the bundle was written' } } });
     refused(texts('bundle', '--check'), 'does not match');
+
+    // A language no alternative has answered yet: a statement that drops a
+    // placed value is refused and nothing is recorded; a checked one is
+    // recorded with Stado for exactly this request and written. The run id
+    // makes the request new, so no earlier statement answers it.
+    write(cataloguePath, { ...catalogue, texts: { ...catalogue.texts, 'dialog.deny': { en: `Deny {who} ${run}`, places: ['who'], for: 'the refusing button, naming who denies' } } });
+    const answers = join(home, 'answers');
+    write(join(answers, `${language}.json`), { 'dialog.deny': 'no value' });
+    refused(texts('attest', '--answers', answers, '--checked', 'journey statement', '--language', language), 'instead of {who}');
+    write(join(answers, `${language}.json`), { 'dialog.deny': `Odmów {who} ${run}` });
+    const attested = texts('attest', '--answers', answers, '--checked', 'journey statement', '--language', language);
+    assert.equal(attested.status, 0, attested.stderr);
+    assert.ok(attested.stdout.includes('statement recorded for request'), attested.stdout);
+    assert.equal(JSON.parse(readFileSync(languagePath, 'utf8'))['dialog.deny'], `Odmów {who} ${run}`);
+    rmSync(answers, { recursive: true, force: true });
     appendFileSync(report, 'PASS\n');
     console.log(`PASS: ${report}`);
   }

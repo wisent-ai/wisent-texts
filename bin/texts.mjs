@@ -13,6 +13,7 @@ const usage = `usage:
   texts [--root DIR] check [--language CODE]... [--allow-missing]
   texts [--root DIR] missing
   texts [--root DIR] translate [--language CODE]...
+  texts [--root DIR] attest --answers DIR --checked TEXT [--language CODE]...
   texts [--root DIR] bundle [--check]
 DIR is the product's texts directory, ./texts by default.`;
 
@@ -33,6 +34,8 @@ const take = (flag) => {
 };
 const root = resolve(take('--root').at(-1) ?? 'texts');
 const languagesWanted = take('--language');
+const answersDir = take('--answers').at(-1);
+const checkedText = take('--checked').at(-1);
 const flags = new Set(args.filter((word) => word.startsWith('--')));
 for (const flag of flags) if (!['--allow-missing', '--check'].includes(flag)) fail(`unknown option ${flag}\n${usage}`, 2);
 const [verb, extra] = args.filter((word) => !word.startsWith('--'));
@@ -123,11 +126,11 @@ function bundle() {
   return `${JSON.stringify({ product, source, texts: Object.fromEntries(entries.map(([key, entry]) => [key, entry[source]])), translations }, null, 1)}\n`;
 }
 
-function translateLanguage(code) {
+/// What one language lacks and the request that asks for it.
+function requestFor(code) {
   const language = fleet.languages.find((entry) => entry.code === code);
   const current = translationOf(code);
   const wanted = entries.filter(([key]) => !(key in current));
-  if (!wanted.length) return `${code}: nothing to translate`;
   const items = Object.fromEntries(
     wanted.map(([key, entry]) => [key, { text: entry[source], for: entry.for ?? '', keep: placed(entry[source]).map((value) => `{${value}}`) }]),
   );
@@ -145,6 +148,29 @@ function translateLanguage(code) {
     ],
     response_format: { type: 'json_object' },
   };
+  return { current, wanted, items, request };
+}
+
+/// Every way `translated` fails to answer what was asked.
+function refusals(wanted, items, translated) {
+  const wrong = [];
+  if (!translated || typeof translated !== 'object' || Array.isArray(translated)) return ['is not one JSON object'];
+  for (const [key, entry] of wanted) {
+    const text = translated[key];
+    if (typeof text !== 'string' || !text.trim()) {
+      wrong.push(`misses ${key}`);
+      continue;
+    }
+    const want = placed(entry[source]);
+    if (!same(want, placed(text))) wrong.push(`${key} places {${placed(text).join('}, {')}} instead of {${want.join('}, {')}}`);
+  }
+  for (const key of Object.keys(translated)) if (!items[key]) wrong.push(`adds ${key}, which was not asked`);
+  return wrong;
+}
+
+/// Ask Stado's alternatives; the answer's content, or the request Stado kept
+/// when none answered it.
+function ask(code, request) {
   const stado = process.env.STADO_BIN || 'stado';
   const answered = spawnSync(stado, ['capabilities', 'call', 'inference', '--consumer', 'wisent-texts'], {
     input: JSON.stringify(request),
@@ -158,41 +184,69 @@ function translateLanguage(code) {
     // lets a statement be recorded for exactly this language's request.
     const kept = said.match(/no statement answers request ([0-9a-f]{64})/)?.[1];
     const statement = kept
-      ? `\nStado kept request ${kept}; a statement answers it with \`stado capabilities attestation record inference --consumer wisent-texts --checked <what was checked> ${kept}\` and the next translate writes it`
+      ? `\nStado kept request ${kept}; texts attest records a checked answer for it, or \`stado capabilities attestation record inference --consumer wisent-texts --checked <what was checked> ${kept}\``
       : '';
-    throw new Error(`${stado} capabilities call inference --consumer wisent-texts exited ${answered.status}, nothing of ${code} was written:\n${said}${statement}`);
+    return { kept, refusal: `${stado} capabilities call inference --consumer wisent-texts exited ${answered.status}, nothing of ${code} was written:\n${said}${statement}` };
   }
-  let content;
   try {
-    content = JSON.parse(answered.stdout).choices?.[0]?.message?.content ?? '';
+    return { content: JSON.parse(answered.stdout).choices?.[0]?.message?.content ?? '' };
   } catch (error) {
     throw new Error(`the answer is not a chat-completions response: ${error.message}`);
   }
-  let translated;
-  try {
-    translated = JSON.parse(String(content).replace(/^```(?:json)?\s*|\s*```$/g, ''));
-  } catch (error) {
-    throw new Error(`the translation is not one JSON object: ${error.message}; nothing of ${code} was written`);
-  }
-  const wrong = [];
-  for (const [key, entry] of wanted) {
-    const text = translated[key];
-    if (typeof text !== 'string' || !text.trim()) {
-      wrong.push(`misses ${key}`);
-      continue;
-    }
-    const want = placed(entry[source]);
-    if (!same(want, placed(text))) wrong.push(`${key} places {${placed(text).join('}, {')}} instead of {${want.join('}, {')}}`);
-  }
-  for (const key of Object.keys(translated)) if (!items[key]) wrong.push(`adds ${key}, which was not asked`);
-  if (wrong.length) throw new Error(`the translation was refused, nothing of ${code} was written: ${wrong.join('; ')}`);
+}
+
+function writeLanguage(code, current, wanted, translated) {
   const merged = { ...current };
   for (const [key] of wanted) merged[key] = translated[key];
   const path = join(translationDir, `${code}.json`);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(`${path}.tmp`, `${JSON.stringify(Object.fromEntries(Object.keys(merged).sort().map((key) => [key, merged[key]])), null, 2)}\n`);
   renameSync(`${path}.tmp`, path);
+}
+
+function translateLanguage(code) {
+  const { current, wanted, items, request } = requestFor(code);
+  if (!wanted.length) return `${code}: nothing to translate`;
+  const answer = ask(code, request);
+  if (answer.refusal) throw new Error(answer.refusal);
+  let translated;
+  try {
+    translated = JSON.parse(String(answer.content).replace(/^```(?:json)?\s*|\s*```$/g, ''));
+  } catch (error) {
+    throw new Error(`the translation is not one JSON object: ${error.message}; nothing of ${code} was written`);
+  }
+  const wrong = refusals(wanted, items, translated);
+  if (wrong.length) throw new Error(`the translation was refused, nothing of ${code} was written: ${wrong.join('; ')}`);
+  writeLanguage(code, current, wanted, translated);
   return `${code}: ${wanted.length} key(s) translated`;
+}
+
+/// One language answered by a statement: the answer in `<answers>/<code>.json`
+/// is checked as a model's answer is, recorded with Stado as the statement
+/// answering exactly this language's request, and written by asking again,
+/// so what is written is what the alternatives answer.
+function attestLanguage(code, answers, checked) {
+  const { wanted, items, request } = requestFor(code);
+  if (!wanted.length) return `${code}: nothing to translate`;
+  const path = join(answers, `${code}.json`);
+  if (!existsSync(path)) throw new Error(`no answer at ${path}`);
+  const translated = read(path, 'the answer');
+  const wrong = refusals(wanted, items, translated);
+  if (wrong.length) throw new Error(`the answer in ${path} was refused, nothing was recorded: ${wrong.join('; ')}`);
+  const asked = ask(code, request);
+  if (asked.refusal && !asked.kept) throw new Error(asked.refusal);
+  if (asked.kept) {
+    const stado = process.env.STADO_BIN || 'stado';
+    const recorded = spawnSync(
+      stado,
+      ['capabilities', 'attestation', 'record', 'inference', '--consumer', 'wisent-texts', '--checked', checked, asked.kept],
+      { input: JSON.stringify(translated), encoding: 'utf8' },
+    );
+    if (recorded.error || recorded.status !== 0) {
+      throw new Error(`${stado} capabilities attestation record ${asked.kept} failed (${recorded.error?.message ?? `exit ${recorded.status}`}): ${recorded.stderr.trim()}`);
+    }
+  }
+  return `${translateLanguage(code)}${asked.kept ? ` (statement recorded for request ${asked.kept})` : ' (an alternative answered; the statement was not needed)'}`;
 }
 
 switch (verb) {
@@ -211,16 +265,20 @@ switch (verb) {
       if (lacks.length) console.log(`${code}: ${lacks.join(', ')}`);
     }
     break;
-  case 'translate': {
+  case 'translate':
+  case 'attest': {
     const before = problems(languagesWanted, true);
     if (before.length) fail(`${product}: the catalogue and translations must pass check first:\n${before.join('\n')}`);
+    if (verb === 'attest' && (!answersDir || !checkedText?.trim())) {
+      fail(`attest needs --answers DIR (one <code>.json answer per language) and --checked TEXT (what was checked to give them)\n${usage}`, 2);
+    }
     // Every language is asked, so one run files the request of each; a
     // language that was not answered or was refused is named with its cause
     // and the command ends non-zero once the others are written.
     const failed = [];
     for (const code of languagesWanted.length ? languagesWanted : others) {
       try {
-        console.log(translateLanguage(code));
+        console.log(verb === 'attest' ? attestLanguage(code, resolve(answersDir), checkedText) : translateLanguage(code));
       } catch (error) {
         failed.push(`${code}: ${error.message}`);
       }
