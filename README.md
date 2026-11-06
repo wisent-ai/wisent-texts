@@ -77,7 +77,7 @@ node ../wisent-texts/bin/texts.mjs bundle [--check]
 product embeds it at build time (`Texts::bundle(include_str!(...))`, an
 `import` of the JSON, or a SwiftPM resource) and asks it for a key in a
 language. `wisent_texts::languages()` is the fleet's list for a product that
-offers its reader a choice.
+offers its reader a choice. A language
 without the key, or one the fleet does not speak, reads English; a key the
 bundle does not hold answers the key itself, so a missing word is visible, and
 `check` refuses it before it ships.
